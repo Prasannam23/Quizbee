@@ -1,17 +1,9 @@
 import { create } from 'zustand';
 import api from '@/lib/axios';
+import { User ,Role } from '@/types/globaltypes';
 
-export type Role = 'STUDENT' | 'TEACHER' | 'ADMIN' | 'SUPERADMIN';
 
-interface User {
-  id: string;
-  email: string;
-  role: Role;
-  firstName: string | null;
-  lastName: string | null;
-  avatar: string | null;
-  createdAt: string;
-}
+
 
 interface AuthStore {
   user: User | null;

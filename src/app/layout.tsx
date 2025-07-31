@@ -5,6 +5,7 @@ import "../globals.css";
 import Navbar from "../component/home/navbar";
 import Footer from "../component/home/footer";
 import AuthProvider from "../component/auth/AuthProvider";
+import Connect from "@/component/auth/connectSocket";
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -31,8 +32,10 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <AuthProvider>
+
           <Navbar />
           <div className=" w-full  h-[50px]"></div>
+          <Connect />
           {children}
           <Footer />
         </AuthProvider>

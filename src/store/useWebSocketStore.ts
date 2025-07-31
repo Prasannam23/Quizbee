@@ -1,454 +1,196 @@
 import { create } from 'zustand';
-import { subscribeWithSelector } from 'zustand/middleware';
+import toast from 'react-hot-toast';
+import { getCookie } from '@/utils/getToken';
+import { useAuthStore } from './userAuthStore';
+import { Question ,LiveUser, startQuizPayload, WebSocketUser } from '@/types/globaltypes';
 
-// Types for WebSocket messages
-export interface WSMessage {
-  type: 'JOIN_ROOM' | 'START_QUIZ' | 'NEXT_QUESTION' | 'END_QUIZ' | 'ANSWER' | 'QUESTION_CHANGE' | 'QUIZ_END' | 'USER_JOINED' | 'USER_LEFT' | 'LEADERBOARD_UPDATE' | 'TEACHER_MESSAGE';
-  payload: unknown;
-}
 
-export interface JoinRoomPayload {
-  quizId: string;
-  userId: string;
-  userName: string;
-  role: 'TEACHER' | 'STUDENT';
-}
 
-export interface StartQuizPayload {
-  quizId: string;
-}
-
-export interface AnswerPayload {
-  quizId: string;
-  questionId: string;
-  userId: string;
-  answer: number;
-  timeSpent: number;
-}
-
-export interface QuestionChangePayload {
-  questionId: string;
-  questionIndex: number;
-  timeLimit: number;
-}
-
-export interface LeaderboardEntry {
-  userId: string;
-  userName: string;
-  score: number;
-  position: number;
-}
-
-export interface ConnectedUser {
-  id: string;
-  name: string;
-  role: 'TEACHER' | 'STUDENT';
-  joinedAt: string;
-  isOnline: boolean;
-  hasAnswered?: boolean;
-}
-
-export interface CurrentQuestion {
-  id: string;
-  index: number;
-  question: string;
-  options: string[];
-  timeLimit: number;
-  startTime: number;
-  correctAnswer?: number;
-}
-
-interface WebSocketState {
-  // Connection state
+interface QuizStore {
   socket: WebSocket | null;
-  isConnected: boolean;
-  isConnecting: boolean;
-  connectionError: string | null;
-  reconnectAttempts: number;
-  maxReconnectAttempts: number;
-  reconnectInterval: number;
-  
-  // Room state
-  currentRoom: string | null;
-  userRole: 'TEACHER' | 'STUDENT' | null;
-  userId: string | null;
-  userName: string | null;
-  
-  // Quiz state
-  quizId: string | null;
-  quizState: 'waiting' | 'starting' | 'in_progress' | 'question_change' | 'ended';
-  currentQuestion: CurrentQuestion | null;
-  
-  // Users and leaderboard
-  connectedUsers: ConnectedUser[];
-  leaderboard: LeaderboardEntry[];
-  
-  // Student specific
-  studentAnswers: Map<string, number>;
-  studentScore: number;
-  hasAnswered: boolean;
-  answerFeedback: { correct: boolean; correctAnswer: number } | null;
-  
-  // Computed properties
-  participants: ConnectedUser[];
-  
-  // Actions
-  connect: (token: string) => void;
-  disconnect: () => void;
-  joinRoom: (payload: JoinRoomPayload) => void;
-  startQuiz: (quizId: string, userId: string) => Promise<void>;
-  nextQuestion: (quizId: string, userId: string) => Promise<void>;
-  endQuiz: (quizId: string, userId: string) => Promise<void>;
-  submitAnswer: (payload: AnswerPayload) => void;
-  sendMessage: (message: { type: string; data: unknown }) => void;
-  
-  // Internal actions
-  setSocket: (socket: WebSocket | null) => void;
-  setConnectionState: (state: { isConnected: boolean; isConnecting: boolean; connectionError: string | null }) => void;
-  handleMessage: (message: WSMessage) => void;
-  resetState: () => void;
-  incrementReconnectAttempts: () => void;
-  resetReconnectAttempts: () => void;
+  loading: boolean;
+  attemptId?: string;
+  quizStarted: boolean;
+  liveUsers: Map<string, LiveUser>;
+  leaderboard: WebSocketUser[];
+  currentQuestion: Question | null;
+  roomJoined: boolean;
+  totalmarks: number;
+  rank: number;
+  connect: () => void;
+  joinRoom: (quizId: string, isHost?: boolean) => void;
+  sendMessage: (type: string, payload: any) => void;
+
+  setLiveUsers: (users: LiveUser[]) => void;
+  addOrUpdateLiveUser: (user: LiveUser) => void;
+  removeLiveUser: (userId: string) => void;
+
+  setLeaderboard: (data: WebSocketUser[]) => void;
+  setQuestion: (q: Question) => void;
 }
 
-export const useWebSocketStore = create<WebSocketState>()(
-  subscribeWithSelector((set, get) => ({
-    // Connection state
-    socket: null,
-    isConnected: false,
-    isConnecting: false,
-    connectionError: null,
-    reconnectAttempts: 0,
-    maxReconnectAttempts: 5,
-    reconnectInterval: 3000,
-    
-    // Room state
-    currentRoom: null,
-    userRole: null,
-    userId: null,
-    userName: null,
-    
-    // Quiz state
-    quizId: null,
-    quizState: 'waiting',
-    currentQuestion: null,
-    
-    // Users and leaderboard
-    connectedUsers: [],
-    leaderboard: [],
-    
-    // Student specific
-    studentAnswers: new Map(),
-    studentScore: 0,
-    hasAnswered: false,
-    answerFeedback: null,
+export const useWebSocketStore = create<QuizStore>((set, get) => ({
+  socket: null,
+  loading: false,
+  quizStarted: false,
+  attemptId: undefined,
+  
+  liveUsers: new Map(),
+  leaderboard: [],
+  currentQuestion: null,
+  roomJoined: false,
+  totalmarks: 0,
+  rank: 0,
 
-    connect: (token: string) => {
-      const state = get();
-      
-      if (state.socket || state.isConnecting) {
-        console.log('Already connected or connecting');
-        return;
-      }
+  connect: () => {
+    set({ loading: true });
 
-      set({ isConnecting: true, connectionError: null });
+    const token = getCookie('token');
+    if (!token) {
+      toast.error('Login required');
+      set({ loading: false });
+      return;
+    }
 
-      try {
-        const wsUrl = `${process.env.NODE_ENV === 'production' ? 'wss' : 'ws'}://${window.location.host}/ws?token=${token}`;
-        const socket = new WebSocket(wsUrl);
+    const loadingToastId = toast.loading('Connecting to WebSocket...');
 
-        socket.onopen = () => {
-          console.log('WebSocket connected');
-          set({ 
-            socket, 
-            isConnected: true, 
-            isConnecting: false, 
-            connectionError: null 
+    const ws = new WebSocket(
+      `${process.env.NEXT_PUBLIC_WEB_SOCKET_URL}?token=${token}`
+    );
+
+    console.log('Connecting to WebSocket:', ws);
+    set({ socket: ws });
+
+    ws.onopen = () => {
+      set({ loading: false });
+      toast.success('Connected to WebSocket', { id: loadingToastId });
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      console.log('WebSocket message received:', msg.type , msg?.payload , msg);
+
+      switch (msg.type) {
+        case 'leaderboard':
+          set({ leaderboard: msg.data });
+          break;
+        case "QUIZ_STARTED" :{
+          toast.success('Quiz started ');
+          set({
+            quizStarted: true,
+            attemptId: msg.payload?.attemptId,
           });
-          get().resetReconnectAttempts();
-        };
-
-        socket.onmessage = (event) => {
-          try {
-            const message: WSMessage = JSON.parse(event.data);
-            get().handleMessage(message);
-          } catch (error) {
-            console.error('Failed to parse WebSocket message:', error);
-          }
-        };
-
-        socket.onclose = (event) => {
-          console.log('WebSocket disconnected:', event.code, event.reason);
-          set({ 
-            socket: null, 
-            isConnected: false, 
-            isConnecting: false,
-            connectionError: event.code !== 1000 ? 'Connection lost' : null
+          break;
+        }
+        case 'QUIZ_ONGOING':{
+          toast.success('Quiz is ongoing ');
+          set({
+            quizStarted: true,
+            attemptId: msg.payload?.attemptId,
           });
+          break;
+        }
+        case 'NEW_QUESTION':
+          console.log('NEW_QUESTION received:', msg.payload);
+          set({ currentQuestion: msg.payload });
+          break;
 
-          // Auto-reconnect logic
-          const currentState = get();
-          if (currentState.reconnectAttempts < currentState.maxReconnectAttempts && event.code !== 1000) {
-            setTimeout(() => {
-              console.log(`Attempting to reconnect... (${currentState.reconnectAttempts + 1}/${currentState.maxReconnectAttempts})`);
-              get().incrementReconnectAttempts();
-              get().connect(token);
-            }, currentState.reconnectInterval);
-          }
-        };
+        case 'USERS_IN_ROOM': {
+          const users: LiveUser[] = msg.payload.users;
+          const usersMap = new Map(users.map((user) => [user.id, user]));
+          set({ roomJoined: true, liveUsers: usersMap });
+          break;
+        }
+        case 'NEW_USER':{
+          const newUser: LiveUser = msg.payload.user;
+          get().addOrUpdateLiveUser(newUser);
+          break;
+        }
 
-        socket.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          set({ 
-            connectionError: 'Connection failed',
-            isConnecting: false 
-          });
-        };
+        case 'USER_JOINED': {
+          const user: LiveUser = msg.payload.user;
+          get().addOrUpdateLiveUser(user);
+          break;
+        }
 
-      } catch (error) {
-        console.error('Failed to create WebSocket connection:', error);
-        set({ 
-          connectionError: 'Failed to create connection',
-          isConnecting: false 
-        });
-      }
-    },
 
-    disconnect: () => {
-      const { socket } = get();
-      if (socket) {
-        socket.close(1000, 'User disconnected');
-      }
-      get().resetState();
-    },
-
-    joinRoom: (payload: JoinRoomPayload) => {
-      const { socket, isConnected } = get();
-      
-      if (!socket || !isConnected) {
-        console.error('Cannot join room: not connected');
-        return;
-      }
-
-      const message: WSMessage = {
-        type: 'JOIN_ROOM',
-        payload
-      };
-
-      socket.send(JSON.stringify(message));
-      
-      set({
-        currentRoom: payload.quizId,
-        quizId: payload.quizId,
-        userRole: payload.role,
-        userId: payload.userId,
-        userName: payload.userName
-      });
-    },
-
-    // Computed properties
-    get participants() {
-      return get().connectedUsers;
-    },
-
-    startQuiz: async (quizId: string, userId: string) => {
-      const { socket, isConnected, userRole } = get();
-      
-      if (!socket || !isConnected) {
-        throw new Error('Cannot start quiz: not connected');
-      }
-
-      if (userRole !== 'TEACHER') {
-        throw new Error('Only teachers can start quiz');
-      }
-
-      const message: WSMessage = {
-        type: 'START_QUIZ',
-        payload: { quizId, userId }
-      };
-
-      socket.send(JSON.stringify(message));
-    },
-
-    nextQuestion: async (quizId: string, userId: string) => {
-      const { socket, isConnected, userRole } = get();
-      
-      if (!socket || !isConnected) {
-        throw new Error('Cannot proceed to next question: not connected');
-      }
-
-      if (userRole !== 'TEACHER') {
-        throw new Error('Only teachers can control quiz progression');
-      }
-
-      const message: WSMessage = {
-        type: 'NEXT_QUESTION',
-        payload: { quizId, userId }
-      };
-
-      socket.send(JSON.stringify(message));
-    },
-
-    endQuiz: async (quizId: string, userId: string) => {
-      const { socket, isConnected, userRole } = get();
-      
-      if (!socket || !isConnected) {
-        throw new Error('Cannot end quiz: not connected');
-      }
-
-      if (userRole !== 'TEACHER') {
-        throw new Error('Only teachers can end quiz');
-      }
-
-      const message: WSMessage = {
-        type: 'END_QUIZ',
-        payload: { quizId, userId }
-      };
-
-      socket.send(JSON.stringify(message));
-    },
-
-    sendMessage: (message: { type: string; data: unknown }) => {
-      const { socket, isConnected } = get();
-      
-      if (!socket || !isConnected) {
-        console.error('Cannot send message: not connected');
-        return;
-      }
-
-      socket.send(JSON.stringify(message));
-    },
-
-    submitAnswer: (payload: AnswerPayload) => {
-      const { socket, isConnected, hasAnswered } = get();
-      
-      if (!socket || !isConnected) {
-        console.error('Cannot submit answer: not connected');
-        return;
-      }
-
-      if (hasAnswered) {
-        console.error('Answer already submitted for this question');
-        return;
-      }
-
-      const message: WSMessage = {
-        type: 'ANSWER',
-        payload
-      };
-
-      socket.send(JSON.stringify(message));
-      
-      // Mark as answered and store the answer
-      set((state) => ({
-        hasAnswered: true,
-        studentAnswers: new Map(state.studentAnswers).set(payload.questionId, payload.answer)
-      }));
-    },
-
-    handleMessage: (message: WSMessage) => {
-      console.log('Received WebSocket message:', message);
-
-      switch (message.type) {
-        case 'USER_JOINED':
         case 'USER_LEFT': {
-          const users = (message.payload as { users: ConnectedUser[] }).users;
-          set({ connectedUsers: users });
+          const userId: string = msg.payload.userId;
+          get().removeLiveUser(userId);
           break;
         }
 
-        case 'START_QUIZ': {
-          set({ 
-            quizState: 'starting',
-            currentQuestion: null,
-            hasAnswered: false,
-            answerFeedback: null
+        case 'rank':
+          set({
+            totalmarks: msg.data,
+            rank: msg.rank,
           });
           break;
-        }
-
-        case 'QUESTION_CHANGE': {
-          const questionData = message.payload as QuestionChangePayload & {
-            question: string;
-            options: string[];
-          };
-          
-          set({ 
-            quizState: 'in_progress',
-            currentQuestion: {
-              id: questionData.questionId,
-              index: questionData.questionIndex,
-              question: questionData.question,
-              options: questionData.options,
-              timeLimit: questionData.timeLimit,
-              startTime: Date.now()
-            },
-            hasAnswered: false,
-            answerFeedback: null
-          });
-          break;
-        }
-
-        case 'LEADERBOARD_UPDATE': {
-          const payload = message.payload as { 
-            leaderboard: LeaderboardEntry[]; 
-            userScore?: number; 
-            answerFeedback?: { correct: boolean; correctAnswer: number } | null 
-          };
-          const leaderboardData = payload.leaderboard;
-          const studentScore = payload.userScore || 0;
-          const answerFeedback = payload.answerFeedback || null;
-          
-          set({ 
-            leaderboard: leaderboardData,
-            studentScore,
-            answerFeedback
-          });
-          break;
-        }
-
-        case 'QUIZ_END': {
-          set({ 
-            quizState: 'ended',
-            currentQuestion: null,
-            hasAnswered: false
-          });
-          break;
-        }
-
-        default:
-          console.warn('Unknown message type:', message.type);
       }
-    },
+    };
 
-    setSocket: (socket: WebSocket | null) => set({ socket }),
+    ws.onerror = (err) => {
+      set({ loading: false });
+      console.error('WebSocket error:', err);
+      toast.error('WebSocket error', { id: loadingToastId });
+    };
 
-    setConnectionState: (state) => set(state),
+    ws.onclose = (error: any) => {
+      console.error('WebSocket closed:', error);
+      toast.error('WebSocket connection closed', { id: loadingToastId });
+      set({ socket: null });
 
-    resetState: () => set({
-      socket: null,
-      isConnected: false,
-      isConnecting: false,
-      connectionError: null,
-      currentRoom: null,
-      userRole: null,
-      userId: null,
-      userName: null,
-      quizId: null,
-      quizState: 'waiting',
-      currentQuestion: null,
-      connectedUsers: [],
-      leaderboard: [],
-      studentAnswers: new Map(),
-      studentScore: 0,
-      hasAnswered: false,
-      answerFeedback: null
+      setTimeout(() => {
+        get().connect(); // Reconnect
+      }, 3000);
+    };
+  },
+
+  joinRoom: (quizId: string, isHost?: boolean) => {
+    const { sendMessage } = get();
+
+    set({ loading: true });
+    const toastId = toast.loading('Joining quiz room...');
+
+    sendMessage('JOIN_ROOM', {
+      quizId,
+      userId: useAuthStore.getState().user?.id || '',
+      isHost: isHost || false,
+    });
+
+    toast.dismiss(toastId);
+  },
+
+  sendMessage: (type: string, payload: startQuizPayload|any) => {
+    const socket = get().socket;
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      const message = { type, payload };
+      socket.send(JSON.stringify(message));
+    } else {
+      toast.error('WebSocket is not connected');
+    }
+  },
+
+  setLiveUsers: (users: LiveUser[]) =>
+    set({
+      liveUsers: new Map(users.map((u) => [u.id, u])),
     }),
 
-    incrementReconnectAttempts: () => 
-      set((state) => ({ reconnectAttempts: state.reconnectAttempts + 1 })),
+  addOrUpdateLiveUser: (user: LiveUser) =>
+    set((state) => {
+      const updated = new Map(state.liveUsers);
+      updated.set(user.id, user);
+      return { liveUsers: updated };
+    }),
 
-    resetReconnectAttempts: () => 
-      set({ reconnectAttempts: 0 })
-  }))
-);
+  removeLiveUser: (userId: string) =>
+    set((state) => {
+      const updated = new Map(state.liveUsers);
+      updated.delete(userId);
+      return { liveUsers: updated };
+    }),
+
+  setLeaderboard: (data) => set({ leaderboard: data }),
+  setQuestion: (q) => set({ currentQuestion: q }),
+}));

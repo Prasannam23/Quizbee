@@ -17,6 +17,7 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { FC, useEffect } from 'react';
+import { useWebSocketStore } from '@/store/useWebSocketStore';
 
 type StatItem = {
   title: string;
@@ -59,11 +60,18 @@ const DashboardPage: FC = () => {
     { name: 'React', avgScore: 81 },
     { name: 'CSS', avgScore: 64 },
   ];
-
+  // const { connect, loading } = useWebSocketStore();
   useEffect(() => {
-    // Load quizzes when component mounts
+
     getQuizzes();
+
   }, [getQuizzes]);
+  // useEffect(() => {
+  //   if (!loading) {
+  //     console.log(1, "11111111111111111111111111111111", loading)
+  //     connect();
+  //   }
+  // }, [])
 
   return (
     <div className="min-h-screen bg-white text-black dark:bg-black dark:text-white">
